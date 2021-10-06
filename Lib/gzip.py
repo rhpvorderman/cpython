@@ -197,20 +197,13 @@ class GzipFile(_compression.BaseStream):
                     "Specify the mode argument for opening it for writing.",
                     FutureWarning, 2)
             self.mode = WRITE
-            self._init_write(filename)
-            self.compress = zlib.compressobj(compresslevel,
-                                             zlib.DEFLATED,
-                                             -zlib.MAX_WBITS,
-                                             zlib.DEF_MEM_LEVEL,
-                                             0)
-            self._write_mtime = mtime
+            raw = _GzipWriter(fileobj, filename, compresslevel, mtime)
+            self._buffer = io.BufferedWriter(raw)
+
         else:
             raise ValueError("Invalid mode: {!r}".format(mode))
 
         self.fileobj = fileobj
-
-        if self.mode == WRITE:
-            self._write_gzip_header(compresslevel)
 
     @property
     def filename(self):
@@ -229,69 +222,12 @@ class GzipFile(_compression.BaseStream):
         s = repr(self.fileobj)
         return '<gzip ' + s[1:-1] + ' ' + hex(id(self)) + '>'
 
-    def _init_write(self, filename):
-        self.name = filename
-        self.crc = zlib.crc32(b"")
-        self.size = 0
-        self.writebuf = []
-        self.bufsize = 0
-        self.offset = 0  # Current file offset for seek(), tell(), etc
-
-    def _write_gzip_header(self, compresslevel):
-        self.fileobj.write(b'\037\213')             # magic header
-        self.fileobj.write(b'\010')                 # compression method
-        try:
-            # RFC 1952 requires the FNAME field to be Latin-1. Do not
-            # include filenames that cannot be represented that way.
-            fname = os.path.basename(self.name)
-            if not isinstance(fname, bytes):
-                fname = fname.encode('latin-1')
-            if fname.endswith(b'.gz'):
-                fname = fname[:-3]
-        except UnicodeEncodeError:
-            fname = b''
-        flags = 0
-        if fname:
-            flags = FNAME
-        self.fileobj.write(chr(flags).encode('latin-1'))
-        mtime = self._write_mtime
-        if mtime is None:
-            mtime = time.time()
-        write32u(self.fileobj, int(mtime))
-        if compresslevel == _COMPRESS_LEVEL_BEST:
-            xfl = b'\002'
-        elif compresslevel == _COMPRESS_LEVEL_FAST:
-            xfl = b'\004'
-        else:
-            xfl = b'\000'
-        self.fileobj.write(xfl)
-        self.fileobj.write(b'\377')
-        if fname:
-            self.fileobj.write(fname + b'\000')
-
     def write(self,data):
         self._check_not_closed()
         if self.mode != WRITE:
             import errno
             raise OSError(errno.EBADF, "write() on read-only GzipFile object")
-
-        if self.fileobj is None:
-            raise ValueError("write() on closed GzipFile object")
-
-        if isinstance(data, (bytes, bytearray)):
-            length = len(data)
-        else:
-            # accept any data that supports the buffer protocol
-            data = memoryview(data)
-            length = data.nbytes
-
-        if length > 0:
-            self.fileobj.write(self.compress.compress(data))
-            self.size += length
-            self.crc = zlib.crc32(data, self.crc)
-            self.offset += length
-
-        return length
+        return self._buffer.write(data)
 
     def read(self, size=-1):
         self._check_not_closed()
@@ -330,13 +266,7 @@ class GzipFile(_compression.BaseStream):
             return
         self.fileobj = None
         try:
-            if self.mode == WRITE:
-                fileobj.write(self.compress.flush())
-                write32u(fileobj, self.crc)
-                # self.size may exceed 2 GiB, or even 4 GiB
-                write32u(fileobj, self.size & 0xffffffff)
-            elif self.mode == READ:
-                self._buffer.close()
+            self._buffer.close()
         finally:
             myfileobj = self.myfileobj
             if myfileobj:
@@ -375,24 +305,8 @@ class GzipFile(_compression.BaseStream):
         return True
 
     def seek(self, offset, whence=io.SEEK_SET):
-        if self.mode == WRITE:
-            if whence != io.SEEK_SET:
-                if whence == io.SEEK_CUR:
-                    offset = self.offset + offset
-                else:
-                    raise ValueError('Seek from end not supported')
-            if offset < self.offset:
-                raise OSError('Negative seek in write mode')
-            count = offset - self.offset
-            chunk = b'\0' * 1024
-            for i in range(count // 1024):
-                self.write(chunk)
-            self.write(b'\0' * (count % 1024))
-        elif self.mode == READ:
-            self._check_not_closed()
-            return self._buffer.seek(offset, whence)
-
-        return self.offset
+        self._check_not_closed()
+        return self._buffer.seek(offset, whence)
 
     def readline(self, size=-1):
         self._check_not_closed()
@@ -401,6 +315,113 @@ class GzipFile(_compression.BaseStream):
     def __iter__(self):
         self._check_not_closed()
         return self._buffer.__iter__()
+
+
+class _GzipWriter(_compression.BaseStream):
+    def __init__(self, fileobj, filename, compresslevel, mtime):
+        self._init_write(filename)
+        self.fileobj = fileobj
+        self.compress = zlib.compressobj(compresslevel,
+                                         zlib.DEFLATED,
+                                         -zlib.MAX_WBITS,
+                                         zlib.DEF_MEM_LEVEL,
+                                         0)
+        self._write_mtime = mtime
+        self._write_gzip_header(compresslevel)
+
+    def writable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    @property
+    def closed(self):
+        return self.fileobj is None
+
+    def _init_write(self, filename):
+        self.name = filename
+        self.crc = zlib.crc32(b"")
+        self.size = 0
+        self.writebuf = []
+        self.bufsize = 0
+        self.offset = 0  # Current file offset for seek(), tell(), etc
+
+    def _write_gzip_header(self, compresslevel):
+        self.fileobj.write(b'\037\213')  # magic header
+        self.fileobj.write(b'\010')  # compression method
+        try:
+            # RFC 1952 requires the FNAME field to be Latin-1. Do not
+            # include filenames that cannot be represented that way.
+            fname = os.path.basename(self.name)
+            if not isinstance(fname, bytes):
+                fname = fname.encode('latin-1')
+            if fname.endswith(b'.gz'):
+                fname = fname[:-3]
+        except UnicodeEncodeError:
+            fname = b''
+        flags = 0
+        if fname:
+            flags = FNAME
+        self.fileobj.write(chr(flags).encode('latin-1'))
+        mtime = self._write_mtime
+        if mtime is None:
+            mtime = time.time()
+        write32u(self.fileobj, int(mtime))
+        if compresslevel == _COMPRESS_LEVEL_BEST:
+            xfl = b'\002'
+        elif compresslevel == _COMPRESS_LEVEL_FAST:
+            xfl = b'\004'
+        else:
+            xfl = b'\000'
+        self.fileobj.write(xfl)
+        self.fileobj.write(b'\377')
+        if fname:
+            self.fileobj.write(fname + b'\000')
+
+    def write(self, data):
+        self._check_not_closed()
+        if self.fileobj is None:
+            raise ValueError("write() on closed GzipFile object")
+
+        if isinstance(data, (bytes, bytearray)):
+            length = len(data)
+        else:
+            # accept any data that supports the buffer protocol
+            data = memoryview(data)
+            length = data.nbytes
+
+        if length > 0:
+            self.fileobj.write(self.compress.compress(data))
+            self.size += length
+            self.crc = zlib.crc32(data, self.crc)
+            self.offset += length
+
+        return length
+
+    def close(self):
+        fileobj = self.fileobj
+        if fileobj is None:
+            return
+        self.fileobj = None
+        write32u(fileobj, self.crc)
+        # self.size may exceed 2 GiB, or even 4 GiB
+        write32u(fileobj, self.size & 0xffffffff)
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        if whence != io.SEEK_SET:
+            if whence == io.SEEK_CUR:
+                offset = self.offset + offset
+            else:
+                raise ValueError('Seek from end not supported')
+        if offset < self.offset:
+            raise OSError('Negative seek in write mode')
+        count = offset - self.offset
+        chunk = b'\0' * 1024
+        for i in range(count // 1024):
+            self.write(chunk)
+        self.write(b'\0' * (count % 1024))
+        return self.offset
 
 
 def _read_exact(fp, n):
