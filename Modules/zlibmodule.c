@@ -1497,6 +1497,94 @@ static PyType_Spec Decomptype_spec = {
     .slots = Decomptype_slots,
 };
 
+
+// ZlibDecompressor. Derived from bz2module BZ2Decompressor. First implemented
+// in python-isal, backported to CPython.
+// For internal use by the gzip module only. zlib.Decompress is optimized for
+// in memory decompression while ZlibDecompressor is optimized for streaming
+// decompression
+
+static Py_ssize_t
+arrange_output_buffer_with_maximum(uint32_t *avail_out,
+                                   uint8_t **next_out,
+                                   PyObject **buffer,
+                                   Py_ssize_t length,
+                                   Py_ssize_t max_length)
+{
+    Py_ssize_t occupied;
+
+    if (*buffer == NULL) {
+        if (!(*buffer = PyBytes_FromStringAndSize(NULL, length)))
+            return -1;
+        occupied = 0;
+    }
+    else {
+        occupied = *next_out - (uint8_t *)PyBytes_AS_STRING(*buffer);
+
+        if (length == occupied) {
+            Py_ssize_t new_length;
+            assert(length <= max_length);
+            /* can not scale the buffer over max_length */
+            if (length == max_length)
+                return -2;
+            if (length <= (max_length >> 1))
+                new_length = length << 1;
+            else
+                new_length = max_length;
+            if (_PyBytes_Resize(buffer, new_length) < 0)
+                return -1;
+            length = new_length;
+        }
+    }
+
+    *avail_out = (uint32_t)Py_MIN((size_t)(length - occupied), UINT32_MAX);
+    *next_out = (uint8_t *)PyBytes_AS_STRING(*buffer) + occupied;
+
+    return length;
+}
+
+static Py_ssize_t
+arrange_output_buffer(uint32_t *avail_out,
+                      uint8_t **next_out,
+                      PyObject **buffer,
+                      Py_ssize_t length)
+{
+    Py_ssize_t ret;
+
+    ret = arrange_output_buffer_with_maximum(avail_out, next_out, buffer,
+                                             length,
+                                             PY_SSIZE_T_MAX);
+    if (ret == -2)
+        PyErr_NoMemory();
+    return ret;
+}
+
+typedef struct {
+    PyObject_HEAD
+    struct inflate_state state;
+    PyObject *unused_data;
+    PyObject *zdict;
+    uint8_t *input_buffer;
+    Py_ssize_t input_buffer_size;
+    /* inflate_state>avail_in is only 32 bit, so we store the true length
+       separately. Conversion and looping is encapsulated in
+       decompress_buf() */
+    Py_ssize_t avail_in_real;
+    char eof;           /* T_BOOL expects a char */
+    char needs_input;
+
+} IgzipDecompressor;
+
+static void
+IgzipDecompressor_dealloc(IgzipDecompressor *self)
+{
+    if(self->input_buffer != NULL)
+        PyMem_Free(self->input_buffer);
+    Py_CLEAR(self->unused_data);
+    Py_CLEAR(self->zdict);
+    Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
 PyDoc_STRVAR(zlib_module_documentation,
 "The functions in this module allow compression and decompression using the\n"
 "zlib library, which is based on GNU zip.\n"
