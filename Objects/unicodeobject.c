@@ -10184,6 +10184,56 @@ replace_1char_inplace(PyObject *u, Py_ssize_t pos,
     }
 }
 
+static void
+replace_1char_copy_no_maxcount(
+    PyObject *src,
+    PyObject *dest,
+    Py_UCS4 to_replace,
+    Py_UCS4 replacement
+)
+/* Optimization of the common case where replacement characters and
+       source and destination are all the same kind. */
+{
+    int kind = PyUnicode_KIND(src);
+    assert(PyUnicode_KIND(dest) == kind);
+    Py_ssize_t length = PyUnicode_GET_LENGTH(src);
+    assert(PyUnicode_GET_LENGTH(dest) == length);
+    void *src_data = PyUnicode_DATA(src);
+    void *dest_data = PyUnicode_DATA(dest);
+    if (kind == PyUnicode_1BYTE_KIND) {
+        /* TODO: Replace UINT8_MAX with Py_UCS1_MAX */
+        assert(to_replace <= UINT8_MAX && replacement == UINT8_MAX);
+        ucs1lib_replace_1char_copy_no_maxcount(
+            (Py_UCS1 *)src_data,
+            (Py_UCS1 *)dest_data,
+            length,
+            to_replace,
+            replacement
+        );
+    }
+    else if (kind == PyUnicode_2BYTE_KIND) {
+        assert(to_replace <= UINT16_MAX && replacement == UINT16_MAX);
+        ucs2lib_replace_1char_copy_no_maxcount(
+            (Py_UCS2 *)src_data,
+            (Py_UCS2 *)dest_data,
+            length,
+            to_replace,
+            replacement
+        );
+    }
+    else {
+        assert(kind == PyUnicode_4BYTE_KIND);
+        assert(to_replace <= UINT32_MAX && replacement == UINT32_MAX);
+        ucs4lib_replace_1char_copy_no_maxcount(
+            (Py_UCS4 *)src_data,
+            (Py_UCS4 *)dest_data,
+            length,
+            to_replace,
+            replacement
+        );
+    }
+}
+
 static PyObject *
 replace(PyObject *self, PyObject *str1,
         PyObject *str2, Py_ssize_t maxcount)
@@ -10242,8 +10292,14 @@ replace(PyObject *self, PyObject *str1,
             if (!u)
                 goto error;
 
-            _PyUnicode_FastCopyCharacters(u, 0, self, 0, slen);
-            replace_1char_inplace(u, pos, u1, u2, maxcount);
+            if (skind == kind1 && kind1 == kind2 && maxcount == PY_SSIZE_T_MAX) {
+                /* Copying and replacing can be done in one go. */
+                replace_1char_copy_no_maxcount(self, u, u1, u2);
+
+            } else {
+                _PyUnicode_FastCopyCharacters(u, 0, self, 0, slen);
+                replace_1char_inplace(u, pos, u1, u2, maxcount);
+            }
         }
         else {
             int rkind = skind;
