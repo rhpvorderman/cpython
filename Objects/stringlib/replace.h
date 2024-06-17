@@ -57,11 +57,17 @@ STRINGLIB(replace_1char_copy_no_maxcount)(
     const STRINGLIB_CHAR *restrict source,
     STRINGLIB_CHAR *restrict dest,
     Py_ssize_t n,
-    const STRINGLIB_CHAR to_replace,
-    const STRINGLIB_CHAR replacement)
+    Py_UCS4 u1,
+    Py_UCS4 u2)
 {
     /* Code below is very easy to vectorize using vector compare functions
        and the compiler will do so. */
+    /* Convert to_replace and replacement to STRINGLIB_CHAR type for easy
+       vectorization. */
+    assert(u1 <= STRINGLIB_MAX_CHAR);
+    assert(u2 <= STRINGLIB_MAX_CHAR);
+    STRINGLIB_CHAR to_replace = u1;
+    STRINGLIB_CHAR replacement = u2;
     for (Py_ssize_t i=0; i<n; i++) {
         STRINGLIB_CHAR current_char = source[i];
         if (current_char == to_replace) {

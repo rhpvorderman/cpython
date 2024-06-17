@@ -10201,8 +10201,6 @@ replace_1char_copy_no_maxcount(
     void *src_data = PyUnicode_DATA(src);
     void *dest_data = PyUnicode_DATA(dest);
     if (kind == PyUnicode_1BYTE_KIND) {
-        /* TODO: Replace UINT8_MAX with Py_UCS1_MAX */
-        assert(to_replace <= UINT8_MAX && replacement <= UINT8_MAX);
         ucs1lib_replace_1char_copy_no_maxcount(
             (Py_UCS1 *)src_data,
             (Py_UCS1 *)dest_data,
@@ -10212,7 +10210,6 @@ replace_1char_copy_no_maxcount(
         );
     }
     else if (kind == PyUnicode_2BYTE_KIND) {
-        assert(to_replace <= UINT16_MAX && replacement <= UINT16_MAX);
         ucs2lib_replace_1char_copy_no_maxcount(
             (Py_UCS2 *)src_data,
             (Py_UCS2 *)dest_data,
@@ -10223,7 +10220,6 @@ replace_1char_copy_no_maxcount(
     }
     else {
         assert(kind == PyUnicode_4BYTE_KIND);
-        assert(to_replace <= UINT32_MAX && replacement <= UINT32_MAX);
         ucs4lib_replace_1char_copy_no_maxcount(
             (Py_UCS4 *)src_data,
             (Py_UCS4 *)dest_data,
