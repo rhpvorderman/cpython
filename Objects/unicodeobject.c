@@ -10292,7 +10292,7 @@ replace(PyObject *self, PyObject *str1,
             if (!u)
                 goto error;
 
-            if (skind == kind1 && kind1 == kind2 && maxcount == PY_SSIZE_T_MAX) {
+            if (skind == PyUnicode_KIND(u) && maxcount == PY_SSIZE_T_MAX) {
                 /* Copying and replacing can be done in one go. */
                 replace_1char_copy_no_maxcount(self, u, u1, u2);
 
