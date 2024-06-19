@@ -246,7 +246,8 @@ managed_static_type_state_init(PyInterpreterState *interp, PyTypeObject *self,
 
     assert((initial == 1) ==
             (_PyRuntime.types.managed_static.types[full_index].interp_count == 0));
-    _PyRuntime.types.managed_static.types[full_index].interp_count += 1;
+    (void)_Py_atomic_add_int64(
+            &_PyRuntime.types.managed_static.types[full_index].interp_count, 1);
 
     if (initial) {
         assert(_PyRuntime.types.managed_static.types[full_index].type == NULL);
@@ -300,7 +301,8 @@ managed_static_type_state_clear(PyInterpreterState *interp, PyTypeObject *self,
     state->type = NULL;
     assert(state->tp_weaklist == NULL);  // It was already cleared out.
 
-    _PyRuntime.types.managed_static.types[full_index].interp_count -= 1;
+    (void)_Py_atomic_add_int64(
+            &_PyRuntime.types.managed_static.types[full_index].interp_count, -1);
     if (final) {
         assert(!_PyRuntime.types.managed_static.types[full_index].interp_count);
         _PyRuntime.types.managed_static.types[full_index].type = NULL;
@@ -2531,7 +2533,7 @@ subtype_dealloc(PyObject *self)
            finalizers since they might rely on part of the object
            being finalized that has already been destroyed. */
         if (type->tp_weaklistoffset && !base->tp_weaklistoffset) {
-            _PyWeakref_ClearWeakRefsExceptCallbacks(self);
+            _PyWeakref_ClearWeakRefsNoCallbacks(self);
         }
     }
 
@@ -2699,6 +2701,34 @@ _PyObject_LookupSpecial(PyObject *self, PyObject *attr)
         if ((f = Py_TYPE(res)->tp_descr_get) != NULL) {
             Py_SETREF(res, f(res, self, (PyObject *)(Py_TYPE(self))));
         }
+    }
+    return res;
+}
+
+/* Steals a reference to self */
+PyObject *
+_PyObject_LookupSpecialMethod(PyObject *self, PyObject *attr, PyObject **self_or_null)
+{
+    PyObject *res;
+
+    res = _PyType_LookupRef(Py_TYPE(self), attr);
+    if (res == NULL) {
+        Py_DECREF(self);
+        *self_or_null = NULL;
+        return NULL;
+    }
+
+    if (_PyType_HasFeature(Py_TYPE(res), Py_TPFLAGS_METHOD_DESCRIPTOR)) {
+        /* Avoid temporary PyMethodObject */
+        *self_or_null = self;
+    }
+    else {
+        descrgetfunc f = Py_TYPE(res)->tp_descr_get;
+        if (f != NULL) {
+            Py_SETREF(res, f(res, self, (PyObject *)(Py_TYPE(self))));
+        }
+        *self_or_null = NULL;
+        Py_DECREF(self);
     }
     return res;
 }
